@@ -28,10 +28,15 @@
 #   the package installs and imports        a packaging fault that an editable
 #   from outside its own checkout           install hides completely
 #
-# Three of `pseudohcm`'s checks are NOT here, and are deferred rather than dropped:
-# marker coverage across every emitted record, byte-identical regeneration from a seed,
-# and the de-growth scenario assertions. All three need a generator. Each belongs in
-# this file the day this emulator grows one, and this comment is what says so.
+# THE THREE DEFERRED CHECKS ARE NOW HERE — D97.
+#
+# This file previously recorded three of `pseudohcm`'s checks as deferred rather than
+# dropped: marker coverage across every emitted record, byte-identical regeneration
+# from a seed, and the scenario assertions. All three needed a generator, and the note
+# said they belonged here the day this emulator grew one.
+#
+# It grew one. They are below, and the note is what made that a debt somebody paid
+# rather than a gap nobody remembered.
 
 name: CI
 
@@ -115,4 +120,125 @@ jobs:
               sys.exit('the product is importable from the harness environment — '
                        'Gate 1 has been breached from this side')
           print('the product is not reachable from here, as intended')
+          "
+
+      # Document 10 §3 — the harness's central claim. Same seed, same parameters,
+      # byte-identical output. Everything downstream that pins a count depends on it,
+      # and a generator that selected at random would break it silently.
+      - name: Generation is reproducible
+        working-directory: /tmp
+        run: |
+          python -c "
+          import json
+          from pseudoscm.generator import Parameters, generate
+
+          def build():
+              c = generate(Parameters(units=4))
+              return json.dumps(c.counts(), sort_keys=True) + '|' + json.dumps(
+                  [m['metric_id'] for m in c.business_unit_metrics][:50])
+
+          first, second = build(), build()
+          assert first == second, 'two runs of the same seed produced different corpora'
+          print('reproducible:', first[:80], '...')
+          "
+
+      # Gate 7, from this side. The product refuses marked records; this asserts the
+      # records are actually marked. A record type that slipped through unmarked would
+      # be silently loadable into a customer database, and no test in the product could
+      # detect it — the product's tests prove the refusal works, not that the stamp was
+      # applied.
+      - name: Every emitted record carries the synthetic marker
+        working-directory: /tmp
+        run: |
+          python -c "
+          from contract.markers import SYNTHETIC_MARKER_FIELD, SYNTHETIC_MARKER_VALUE
+          from pseudoscm.emit import ENTITY_FILES
+          from pseudoscm.generator import Parameters, generate
+
+          corpus = generate(Parameters(units=4))
+          total = 0
+          unmarked = []
+          for entity, attribute in ENTITY_FILES.items():
+              rows = getattr(corpus, attribute)
+              assert rows, entity + ' is empty — this check would pass by vacancy'
+              for row in rows:
+                  total += 1
+                  if row.get(SYNTHETIC_MARKER_FIELD) != SYNTHETIC_MARKER_VALUE:
+                      unmarked.append((entity, row))
+          assert not unmarked, str(len(unmarked)) + ' record(s) carry no marker'
+          print('every record marked across', total, 'rows')
+          "
+
+      # Every metric states which way is good. `actual / plan` means nothing without
+      # it: a cost centre eleven per cent under budget and a sales unit eleven per cent
+      # under its number produce the same ratio and mean opposite things.
+      - name: Every metric states a direction
+        working-directory: /tmp
+        run: |
+          python -c "
+          from pseudoscm.generator import Parameters, generate
+
+          corpus = generate(Parameters(units=4))
+          assert corpus.business_unit_metrics, 'no metrics — vacuous'
+          directions = {m['direction'] for m in corpus.business_unit_metrics}
+          assert directions <= {'HIGHER_IS_BETTER', 'LOWER_IS_BETTER'}, directions
+          assert len(directions) == 2, (
+              'every measure runs the same way, so a product could assume a direction '
+              'and stay green: ' + str(directions))
+          assert all(m['plan'] != 0 for m in corpus.business_unit_metrics), (
+              'a zero plan makes the ratio undefined and the schema refuses it')
+          print('directions present:', sorted(directions))
+          "
+
+      # Pillar E's second hypothesis for an anomalous unit is that it is constrained by
+      # something other than its people. A supply disruption is exactly that, and this
+      # corpus is what makes the claim testable: here the true cause is known and it is
+      # not the people.
+      - name: The disruption hits the named sites and no others
+        working-directory: /tmp
+        run: |
+          python -c "
+          from datetime import date
+          from pseudoscm.generator import Parameters, generate
+          from pseudoscm.scenarios import inject_supply_disruption
+
+          p = Parameters(units=4, history_end=date(2024, 12, 31))
+          c = generate(p)
+          otif = [m for m in c.business_unit_metrics if m['metric_key'] == 'otif_pct']
+          assert all(m['actual'] > m['plan'] * 0.8 for m in otif), (
+              'the base corpus already contains a disruption — injected, never '
+              'generated')
+
+          untouched_before = [m['actual'] for m in c.business_unit_metrics
+                              if m['source_unit_id'] == 'PSEUDO::SITE-004']
+          r = inject_supply_disruption(c, start=date(2024, 4, 1), end=date(2024, 6, 30),
+                                       unit_codes=('SITE-001', 'SITE-002'))
+          assert r['units_affected'] == 2, r
+          untouched_after = [m['actual'] for m in c.business_unit_metrics
+                             if m['source_unit_id'] == 'PSEUDO::SITE-004']
+          assert untouched_before == untouched_after, (
+              'a disruption hitting every unit equally standardises away to nothing, '
+              'which is a real effect and a different test')
+          print('disrupted:', r['metrics_adjusted'], 'metrics across',
+                r['units_affected'], 'sites')
+          "
+
+      # Three of four measures improve as they FALL. Financial data leans
+      # higher-is-better and a product could carry a wrong default a long way on it;
+      # operations data is where that default becomes unmissable.
+      - name: Most measures here improve as they fall
+        working-directory: /tmp
+        run: |
+          python -c "
+          from pseudoscm.generator import MEASURES, Parameters
+
+          lower = [k for k, _, d, _ in MEASURES if d == 'LOWER_IS_BETTER']
+          assert len(lower) == 3, lower
+          assert any(d == 'HIGHER_IS_BETTER' for _, _, d, _ in MEASURES), (
+              'every measure running the same way is as one-sided as a revenue-only '
+              'corpus, in the other direction')
+          assert Parameters().months_per_period == 1, (
+              'monthly here, quarterly in finance, annual in HR — three clocks that do '
+              'not align is what exercises the cycle mapping at all')
+          print('lower-is-better:', lower)
           "
